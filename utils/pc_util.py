@@ -256,6 +256,10 @@ def read_ply(filename):
 
 def write_ply(points, filename, text=True):
     """ input: Nx3 or Nx6, write points to filename as PLY format. """
+    
+    if points.shape[1] == 4:
+        points = points[:, 0:3, ...]
+    
     if points.shape[1] == 3:
         points = [(points[i,0], points[i,1], points[i,2]) for i in range(points.shape[0])]
         vertex = np.array(points, dtype=[('x', 'f4'), ('y', 'f4'),('z', 'f4')])

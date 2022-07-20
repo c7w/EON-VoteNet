@@ -17,6 +17,7 @@ FAR_THRESHOLD = 0.6
 NEAR_THRESHOLD = 0.3
 GT_VOTE_FACTOR = 3 # number of GT votes per point
 OBJECTNESS_CLS_WEIGHTS = [0.2,0.8] # put larger weights on positive objectness
+QUAD_CLS_WEIGHTS = [0.4,0.6]
 
 def compute_vote_loss(end_points):
     """ Compute vote loss: Match predicted votes to GT votes.
@@ -277,6 +278,111 @@ def compute_point_mask_loss(end_points, point_mask_logits, point_gt_mask, bg_wei
     return end_points, mask_loss
 
 
+def compute_quad_score_loss(end_points, config):
+    # Associate proposal and GT objects by point-to-point distances
+    prefix = ""
+    quad_score_loss_sum = 0.0
+   
+    gt_center = end_points['gt_quad_centers'][:, :, 0:3]  # B, K2, 3
+    aggregated_vote_xyz = end_points['seed_xyz']
+    B = gt_center.shape[0]
+    K = aggregated_vote_xyz.shape[1]
+    K2 = gt_center.shape[1]
+    dist1, ind1, dist2, _ = nn_distance(aggregated_vote_xyz, gt_center) # dist1: BxK, dist2: BxK2
+    num_gt_quads = end_points["num_gt_quads"] #Bx1
+    
+    # import IPython
+    # IPython.embed()
+
+    euclidean_dist1 = torch.sqrt(dist1+1e-6)
+    quad_label = torch.zeros((B,K), dtype=torch.long).cuda()
+    quad_mask = torch.zeros((B,K)).cuda()
+    quad_label[euclidean_dist1<NEAR_THRESHOLD] = 1
+    quad_label[ind1>=num_gt_quads] = 0
+    quad_mask[euclidean_dist1<NEAR_THRESHOLD] = 1
+    quad_mask[euclidean_dist1>FAR_THRESHOLD] = 1
+
+    # Set assignment
+    quad_assignment = ind1
+    quad_assignment[quad_label==0] = K2 - 1  # set background points to the last gt bbox
+    
+    end_points[f'{prefix}quad_label'] = quad_label
+    end_points[f'{prefix}quad_mask'] = quad_mask
+    end_points[f'{prefix}quad_assignment'] = quad_assignment
+
+    # Compute quad scores loss
+    quad_scores = end_points[f'{prefix}quad_scores']
+    criterion = nn.CrossEntropyLoss(torch.Tensor(QUAD_CLS_WEIGHTS).cuda(), reduction='none')
+    quad_scores_loss = criterion(quad_scores.transpose(2,1), quad_label)  # Calc binary classification loss per "quad" to decide if it is a quad
+    quad_scores_loss = torch.sum(quad_scores_loss * quad_mask)/(torch.sum(quad_mask)+1e-6)
+
+    end_points[f'{prefix}quad_scores_loss'] = quad_scores_loss
+    quad_score_loss_sum += quad_scores_loss
+
+    return quad_score_loss_sum, end_points
+
+
+def smoothl1_loss(error, delta=1.0):
+    """Smooth L1 loss.
+    x = error = pred - gt or dist(pred,gt)
+    0.5 * |x|^2                 if |x|<=d
+    |x| - 0.5 * d               if |x|>d
+    """
+    diff = torch.abs(error)
+    loss = torch.where(diff < delta, 0.5 * diff * diff / delta, diff - 0.5 * delta)
+    return loss
+
+def compute_quad_loss(end_points, config):
+    """ Compute 3D bounding box and semantic classification loss. """
+
+    quad_center_loss_sum = 0.0
+    quad_vector_loss_sum = 0.0
+    quad_size_loss_sum = 0.0
+    #quad_direction_loss_sum = 0.0
+    # prefixes = ['proposal_'] + ['last_'] + [f'{i}head_' for i in range(num_layer-1)]
+    prefix = ""
+    # for prefix in prefixes:
+    quad_assignment = end_points[f'{prefix}quad_assignment']
+    # To decide if a prediction is considered as a quad or not
+    quad_label = end_points[f'{prefix}quad_label'].float()
+    B = quad_assignment.shape[0]
+    K = quad_assignment.shape[1]
+    
+    # Compute center loss
+    pred_center = end_points[f'{prefix}quad_center']
+    gt_center = end_points['gt_quad_centers'][:, :, 0:3]
+    quad_assignment_expand = quad_assignment.unsqueeze(2).repeat(1, 1, 3)
+    assigned_gt_center = torch.gather(gt_center, 1, quad_assignment_expand)  # (B, K, 3) from (B, K2, 3)
+    center_loss = smoothl1_loss(assigned_gt_center - pred_center, delta=1.0)  # (B,K)
+    center_loss = torch.sum(center_loss * quad_label.unsqueeze(2)) / (torch.sum(quad_label) + 1e-6)
+    end_points[f'{prefix}quad_center_loss'] = center_loss
+    quad_center_loss_sum += center_loss
+
+    # Compute normal vector loss
+    pred_vector = end_points[f'{prefix}normal_vector'] #B,K,3
+    gt_vector = torch.gather(end_points['gt_normal_vectors'],1,quad_assignment_expand)
+
+    cos_similar =  torch.cosine_similarity(pred_vector,gt_vector,dim=2)
+    vector_loss = torch.ones((B,K), dtype=torch.float32).cuda()-cos_similar  # (B,K)
+    #vector_loss = smoothl1_loss(pred_vector - gt_vector, delta=1.0)  # (B,K)
+    vector_loss = torch.sum(vector_loss * quad_label) / (torch.sum(quad_label) + 1e-6)
+    end_points[f'{prefix}normal_vector_loss'] = vector_loss
+    quad_vector_loss_sum += vector_loss
+
+    # Compute size loss
+    pred_size = end_points[f'{prefix}quad_size']
+    gt_size = torch.gather(end_points['gt_quad_sizes'], 1, 
+                        quad_assignment.unsqueeze(2).repeat(1, 1, 2)) # (B, K, 3) from (B, K2, 3)
+    size_loss = smoothl1_loss(pred_size - gt_size,delta=1.0)
+    size_loss = torch.sum((size_loss * quad_label.unsqueeze(2)) / (
+                    torch.sum(quad_label) + 1e-6))
+    end_points[f'{prefix}quad_size_loss'] = size_loss
+    quad_size_loss_sum += size_loss
+
+    return quad_center_loss_sum,quad_vector_loss_sum,quad_size_loss_sum, end_points
+
+
+
 def get_loss(end_points, config, FLAGS=None):
     """ Loss functions
 
@@ -340,6 +446,19 @@ def get_loss(end_points, config, FLAGS=None):
     end_points['box_loss'] = box_loss
     end_points, point_pose_loss, point_cls_loss, pose_acc_all = compute_point_pose_loss(end_points)
 
+    # # quadness loss
+    # quad_score_loss_sum, end_points = compute_quad_score_loss(end_points, config)
+    # end_points['quad_score_loss_sum'] = quad_score_loss_sum
+    
+    # # quad loss
+    # quad_center_loss_sum,quad_vector_loss_sum, quad_size_loss_sum, end_points = compute_quad_loss(end_points, config)
+    # end_points['quad_center_loss_sum'] = quad_center_loss_sum
+    # end_points['quad_vector_loss_sum'] = quad_vector_loss_sum
+    # end_points['quad_size_loss_sum'] = quad_size_loss_sum
+
+    # quad_loss_sum = quad_center_loss_sum + quad_vector_loss_sum + quad_size_loss_sum
+    # end_points['quad_loss_sum'] = quad_loss_sum
+
     seed_gt_mask = end_points['seed_gt_mask']
     end_points, seed_mask_loss = compute_point_mask_loss(end_points, end_points['seed_mask_logits'], seed_gt_mask)
     end_points['seed_mask_loss'] = seed_mask_loss
@@ -359,7 +478,12 @@ def get_loss(end_points, config, FLAGS=None):
     end_points['seed_bg_iou_acc'] = iou_bg
 
     # Final loss function
-    loss = vote_loss + 0.5*objectness_loss + box_loss + 0.1*sem_cls_loss + 0.1*(point_cls_loss + point_pose_loss) + 0.1* seed_mask_loss
+    object_loss = 0.5*objectness_loss + box_loss + 0.1*sem_cls_loss + 0.1*(point_cls_loss + point_pose_loss) + 0.1* seed_mask_loss
+    # quad_loss = quad_loss_sum+ 0.5*quad_score_loss_sum
+    quad_loss = 0
+    
+    loss = vote_loss + 0.5 * object_loss + 0.00 * quad_loss
+    
     loss *= 10
     end_points['loss'] = loss
 

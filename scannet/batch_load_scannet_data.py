@@ -69,9 +69,11 @@ def batch_export():
             print('File already exists. skipping.')
             print('-'*20+'done')
             continue
+        export_one_scan(scan_name, output_filename_prefix)
         try:            
             export_one_scan(scan_name, output_filename_prefix)
-        except:
+        except Exception as e:
+            print(e)
             print('Failed export scan: %s'%(scan_name))            
         print('-'*20+'done')
 

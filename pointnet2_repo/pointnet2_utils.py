@@ -196,6 +196,7 @@ class QueryAndGroupEquiv(nn.Module):
         grouped_xyz: (B,3,Np,Nnb)
         bq_idx: [B, Np, Nnb] ranging {0, 1, ..., Np-1}
         """
+        
         idx = bq(self.radius, self.nsample, xyz, new_xyz).long()  # [B, N_pts, N_nb]
         bq_idx = idx.clone()
 

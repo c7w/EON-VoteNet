@@ -1,1 +1,17 @@
 scripts
+runs/
+tmp/
+wandb/
+dump/
+kernels/
+log/
+pointnet2**/
+**checkpoint**
+__pycache__/
+scannet/scannet_planes/
+scannet/dl/
+scannet/scannet_train_detection_data/
+scannet/scans
+scannet/scans_transform/
+Pointnet2_PyTorch/
+scan2cad/scan2cad_detection_labels/

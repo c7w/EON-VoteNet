@@ -348,6 +348,7 @@ class KPE2ModuleVotes(nn.Module):
         bq_idx:
             [B, Np, Nnb], ranging [0,...,N]
         """
+        
         if len(features.shape) == 3:  # first layer; augment it
             features = features[:, :, None, :].expand([-1, -1, self.n_rot, -1])  # [B,C,Nr,N]
 
@@ -469,6 +470,7 @@ class KPConvEquivSO2(nn.Module):
         Returns:
             new_features, (B, D_out, Nr, Np)
         """
+        
         # compensate xyz feature, if the first 3 dim is xyz feature
         if self.compensate_xyz_feat:
             xyz_feats = grouped_features[:, :3, ...]  # (B, 3, Nr, Np, Nnb)

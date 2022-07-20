@@ -18,8 +18,8 @@ from sunrgbd import sunrgbd_utils
 from utils import pc_util
 # params
 parser = argparse.ArgumentParser()                                                                                                                                                                                                                                                                                        
-parser.add_argument('--out', default="./meshes/", help="outdir")
-parser.add_argument('--dataset_path', default="scan2cad_detection_labels")
+parser.add_argument('--out', default="./meshes2/", help="outdir")
+parser.add_argument('--dataset_path', default="scan2cad_detection_labels2")
 parser.add_argument('--size_expansion', default=1.0, type=float)
 opt = parser.parse_args()
 opt.dataset_path = os.path.join(BASE_DIR, opt.dataset_path)
@@ -143,6 +143,10 @@ if __name__ == '__main__':
                 # <-- ignore normals etc.
             with open(outdir + "/scan_align.ply", mode='wb') as f:
                 PlyData(mesh_scan).write(f)
+
+
+        import IPython
+        IPython.embed()
 
         obbs_9d = []
         point_masks = np.zeros([N,]) > 1  # all False

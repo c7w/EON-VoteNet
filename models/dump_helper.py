@@ -3,6 +3,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+from re import T
 import numpy as np
 import torch
 import os
@@ -32,7 +33,7 @@ def dump_results(end_points, dump_dir, config, inference_switch=False):
         None
     '''
     if not os.path.exists(dump_dir):
-        os.system('mkdir %s'%(dump_dir))
+        os.makedirs(dump_dir, exist_ok=True)
 
     # INPUT
     point_clouds = end_points['point_clouds'].cpu().numpy()

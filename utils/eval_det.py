@@ -87,7 +87,6 @@ def eval_det_cls(pred, gt, ovthresh=0.25, use_07_metric=False, get_iou_func=get_
             prec: numpy array of length nd
             ap: scalar, average precision
     """
-
     # construct gt objects
     class_recs = {} # {img_id: {'bbox': bbox list, 'det': matched list}}
     npos = 0

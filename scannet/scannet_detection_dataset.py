@@ -9,6 +9,7 @@ An axis aligned bounding box is parameterized by (cx,cy,cz) and (dx,dy,dz)
 where (cx,cy,cz) is the center point of the box, dx is the x-axis length of the box.
 """
 import os
+import random
 import sys
 import numpy as np
 from torch.utils.data import Dataset
@@ -27,7 +28,8 @@ MEAN_COLOR_RGB = np.array([109.8, 97.2, 83.8])
 class ScannetDetectionDataset(Dataset):
        
     def __init__(self, split_set='train', num_points=20000,
-        use_color=False, use_height=False, augment=False):
+        use_color=False, use_height=False, augment=False,
+        start_proportion=0.0, end_proportion=1.0,):
 
         self.data_path = os.path.join(BASE_DIR, 'scannet_train_detection_data')
         all_scan_names = list(set([os.path.basename(x)[0:12] \
@@ -39,6 +41,13 @@ class ScannetDetectionDataset(Dataset):
                 'scannetv2_{}.txt'.format(split_set))
             with open(split_filenames, 'r') as f:
                 self.scan_names = f.read().splitlines()   
+                
+            # Here change the dataset to splitted
+            random.shuffle(self.scan_names)
+            self.start_idx = int(len(self.scan_names) * start_proportion)
+            self.end_idx = int(len(self.scan_names) * end_proportion)
+            self.scan_names = self.scan_names[self.start_idx:self.end_idx]
+            
             # remove unavailiable scans
             num_scans = len(self.scan_names)
             self.scan_names = [sname for sname in self.scan_names \

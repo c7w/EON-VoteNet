@@ -10,6 +10,7 @@ where (cx,cy,cz) is the center point of the box, dx is the x-axis length of the 
 """
 import os
 import sys
+import random
 import numpy as np
 from torch.utils.data import Dataset
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -26,7 +27,7 @@ MAX_NUM_OBJ = 64
 class Scan2CadDetectionDataset(Dataset):
        
     def __init__(self, split_set='train', num_points=40000, n_rot=4, dataset_folder='scan2cad_train_detection_data',
-        use_height=True, augment=True, return_color=False):
+        use_height=True, augment=True, return_color=False, start_proportion=0.0, end_proportion=1.0,):
         self.angle_alignment = 'forward aligns with negative y axis.'
         self.n_rot = n_rot
         self.DC = Scan2CadDatasetConfig(n_rot=self.n_rot)
@@ -34,6 +35,8 @@ class Scan2CadDetectionDataset(Dataset):
         self.data_path = os.path.join(DATA_DIR, dataset_folder)
         all_scan_names = list(set([os.path.basename(x)[0:12] \
             for x in os.listdir(self.data_path) if x.startswith('scene')]))
+        plane_scan_names = list(set([os.path.basename(x)[0:12] \
+            for x in os.listdir("./scannet/scannet_planes") if x.startswith('scene')]))
         if split_set=='all':            
             self.scan_names = all_scan_names
         elif split_set in ['train', 'val', 'test']:
@@ -44,7 +47,9 @@ class Scan2CadDetectionDataset(Dataset):
             # remove unavailiable scans
             num_scans = len(self.scan_names)
             self.scan_names = [sname for sname in self.scan_names \
-                if sname in all_scan_names]
+                if sname in all_scan_names and sname in plane_scan_names]
+            # self.scan_names = [sname for sname in self.scan_names \
+            #     if sname in all_scan_names ]
             print('kept {} scans out of {}'.format(len(self.scan_names), num_scans))
         else:
             print('illegal split name')
@@ -53,6 +58,12 @@ class Scan2CadDetectionDataset(Dataset):
         self.num_points = num_points
         self.use_height = use_height
         self.augment = augment
+        
+        # Here change the dataset to splitted
+        self.scan_names = sorted(self.scan_names)
+        self.start_idx = int(len(self.scan_names) * start_proportion)
+        self.end_idx = int(len(self.scan_names) * end_proportion)
+        self.scan_names = self.scan_names[self.start_idx:self.end_idx]
        
     def __len__(self):
         return len(self.scan_names)
@@ -94,6 +105,9 @@ class Scan2CadDetectionDataset(Dataset):
             height = point_cloud[:,2] - floor_height
             point_cloud = np.concatenate([point_cloud, np.expand_dims(height, 1)],1)
         
+        from scannet.scannet_planes import get_quads 
+        rectangles, total_quad_num, horizontal_quads = get_quads(scan_name)
+        
         # ------------------------------- DATA AUGMENTATION ------------------------------        
         if self.augment:
             if np.random.random() > 0.5:
@@ -103,6 +117,8 @@ class Scan2CadDetectionDataset(Dataset):
                 bboxes[:, 6] = - bboxes[:, 6]
                 point_votes[:, [0, 3, 6]] = -1 * point_votes[:, [0, 3, 6]]
                 point_pose = - point_pose
+                rectangles[:,0] = -1* rectangles[:,0]      
+                rectangles[:,3] = -1* rectangles[:,3]
 
             if np.random.random() > 0.5:
                 # Flipping along the XZ plane
@@ -111,10 +127,14 @@ class Scan2CadDetectionDataset(Dataset):
                 bboxes[:, 6] = np.pi - bboxes[:, 6]
                 point_votes[:, [1, 4, 7]] = -1 * point_votes[:, [1, 4, 7]]
                 point_pose = np.pi - point_pose
+                rectangles[:,1] = -1* rectangles[:,1]      
+                rectangles[:,4] = -1* rectangles[:,4]        
 
             # Rotation along up-axis/Z-axis
             rot_angle = (np.random.random() * np.pi / 18) - np.pi / 36  # -5 ~ +5 degree
             rot_mat = sunrgbd_utils.rotz(rot_angle)
+            from scannet.model_util_scannet import rotate_quad
+            rectangles = rotate_quad(rectangles,rot_mat)
 
             point_votes_end = np.zeros_like(point_votes)
             point_votes_end[:, :3] = np.dot(point_cloud[:, 0:3] + point_votes[:, :3], np.transpose(rot_mat))
@@ -183,6 +203,35 @@ class Scan2CadDetectionDataset(Dataset):
         ret_dict['sym_label'] = point_sym.astype(np.int64)
         ret_dict['scan_idx'] = np.array(idx).astype(np.int64)
         ret_dict['point_cloud_color'] = point_cloud_color
+        
+        MAX_NUM_QUAD = 32
+        NUM_QUAD_PROPOSAL = 1024
+        target_quad_centers = np.zeros((MAX_NUM_QUAD,3)) 
+        target_normal_vectors = np.zeros((MAX_NUM_QUAD,3)) 
+        target_quad_sizes = np.zeros((MAX_NUM_QUAD,2))    
+        
+        if rectangles.shape[0]>0:                                                
+            target_quad_centers[0:rectangles.shape[0],:]=rectangles[:,0:3]         
+            target_normal_vectors[0:rectangles.shape[0],:]=rectangles[:,3:6]
+            target_quad_sizes[0:rectangles.shape[0],:]=rectangles[:,6:8]
+            #target_quad_direction[0:rectangles.shape[0],:]=rectangles[:,8:9]
+
+        ret_dict['gt_quad_centers'] = target_quad_centers.astype(np.float32)
+        ret_dict['gt_quad_sizes'] = target_quad_sizes.astype(np.float32)
+        ret_dict['gt_normal_vectors'] = target_normal_vectors.astype(np.float32)
+        #ret_dict['gt_quad_direction'] = target_quad_direction.astype(np.float32)
+
+        num_gt_quads = np.zeros((NUM_QUAD_PROPOSAL))+ rectangles.shape[0]
+        ret_dict['num_gt_quads'] =  num_gt_quads.astype(np.int64)
+        
+        num_total_quads = np.zeros((NUM_QUAD_PROPOSAL)) + total_quad_num
+        ret_dict['num_total_quads'] =  num_total_quads.astype(np.int64)
+        
+        target_horizontal_quads = np.zeros((4,4,3))
+        if len(horizontal_quads)>0:
+            target_horizontal_quads[0:len(horizontal_quads),:]=horizontal_quads[:,:,:]                                              
+        ret_dict['horizontal_quads'] = target_horizontal_quads.astype(np.float32)
+        
         return ret_dict
         
 ############# Visualizaion ########

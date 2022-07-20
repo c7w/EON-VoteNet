@@ -18,6 +18,7 @@ from utils import pc_util
 from pointnet2_repo.pointnet2_modules import PointnetSAModuleVotes
 
 def decode_scores(net, end_points, num_class, num_heading_bin, num_size_cluster, mean_size_arr, mode_pose):
+    
     mode_rot_mat = pc_util.batch_rotz(mode_pose)  # [B, Np, 3, 3]
     net_transposed = net.transpose(2,1) # (batch_size, 1024, 2+3+num_heading_bin*2+num_size_cluster*4)
     batch_size = net_transposed.shape[0]
@@ -121,6 +122,82 @@ class ProposalModule(nn.Module):
         end_points = decode_scores(net, end_points, self.num_class, self.num_heading_bin, self.num_size_cluster,
                                    self.mean_size_arr, mode_pose)
         return end_points
+
+class QuadProposalModule(nn.Module):
+    def __init__(self,hidden_dim): 
+        super().__init__()
+        self.quad_scores_head = torch.nn.Conv1d(hidden_dim, 2, 1)
+        self.center_head = torch.nn.Conv1d(hidden_dim, 3, 1)
+        self.normal_vector_head = torch.nn.Conv1d(hidden_dim, 1, 1)
+        self.size_head = torch.nn.Conv1d(hidden_dim, 2, 1)
+        #self.direction_head = torch.nn.Conv1d(hidden_dim, 1, 1)
+        self.conv1 = torch.nn.Conv1d(hidden_dim,hidden_dim,1)
+        self.conv2 = torch.nn.Conv1d(hidden_dim,hidden_dim,1)
+        self.bn1 = torch.nn.BatchNorm1d(hidden_dim)
+        self.bn2 = torch.nn.BatchNorm1d(hidden_dim)
+    def forward(self,net,base_xyz,end_points,prefix):
+
+        pc = end_points['point_clouds']
+        batch_size = pc.shape[0]
+        layout_pt_cnt = pc.shape[1]
+        
+        net = F.relu(self.bn1(self.conv1(net)))
+        net = F.relu(self.bn2(self.conv2(net)))
+        quad_scores = self.quad_scores_head(net).transpose(2, 1)  # (batch_size, num_proposal, 2)
+        center = self.center_head(net).transpose(2, 1) + base_xyz # (batch_size, num_proposal, 3)
+        
+        size = self.size_head(net).transpose(2, 1) 
+        #direction = self.direction_head(net).transpose(2, 1) 
+        end_points[f'{prefix}quad_scores'] = quad_scores    
+        end_points[f'{prefix}quad_center'] = center # (batch_size, num_proposal, 3)
+        # end_points[f'{prefix}normal_vector'] = normal_vector
+        end_points[f'{prefix}quad_size'] = size
+        #end_points[f'{prefix}quad_direction'] = direction
+        
+        local_normals = torch.zeros((batch_size, 1024, 3)).cuda()
+        for i in range(batch_size):
+            point_cloud = pc[i][:, 0:3]
+            pc_center = point_cloud.mean(dim=0)
+            # Normal similarity: calc and statistic analysis
+            import open3d as o3d
+            param = o3d.geometry.KDTreeSearchParamHybrid(radius=0.08, max_nn=20)
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(point_cloud.cpu().numpy())
+            pcd.estimate_normals(search_param=param)
+            normals = np.asarray(pcd.normals)
+            
+            reverse_mask = ((point_cloud - pc_center).cpu().numpy().reshape(layout_pt_cnt, 1, 3) \
+                    @ normals.reshape(layout_pt_cnt, 3, 1)).reshape(layout_pt_cnt) < 0
+            
+            normals[reverse_mask] = -normals[reverse_mask]
+            normals = - normals
+            
+            from sklearn.neighbors import NearestNeighbors
+            neigh = NearestNeighbors(n_neighbors=10)
+            neigh.fit(point_cloud.cpu().numpy())
+            neigh_dist, neigh_ind = neigh.kneighbors(end_points['quad_center'][i].detach().cpu().numpy())
+            
+            # neigh_ind (1024, 10)
+            # normals (40000, 3)
+            selected_normals = np.stack([normals[neigh_ind[i], :].mean(axis=0) for i in range(1024)], axis=0)
+            selected_normals[:, 2] = 0.
+            selected_normals = selected_normals / np.linalg.norm(selected_normals, axis=1)[:, None]
+            selected_normals[np.isnan(selected_normals)] = 1e-6
+            
+            local_normals[i] = torch.tensor(selected_normals).cuda()
+
+        assert not torch.isnan(local_normals).any()
+        # delta_rad = self.normal_vector_head(net)[:, 0, :]
+        # from pc_util import batch_rotz
+        # normal_vector = (batch_rotz(delta_rad) @ local_normals[:,:,:,None])[..., 0]
+        
+        # normal_vector = .transpose(2, 1) 
+        # normal_vector_norm = torch.norm(normal_vector, p=2)
+        # normal_vector = normal_vector.div(normal_vector_norm)
+        end_points[f'{prefix}normal_vector'] = local_normals
+        
+        
+        return center, size, end_points
 
 if __name__=='__main__':
     sys.path.append(os.path.join(ROOT_DIR, 'sunrgbd'))

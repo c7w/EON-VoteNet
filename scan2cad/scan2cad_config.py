@@ -20,6 +20,10 @@ class Scan2CadDatasetConfig(object):
 
         self.type2class = semantic_map.OURS_NAME_TO_LABEL
         self.class2type = {self.type2class[t]:t for t in self.type2class}
+        
+        self.quad2class = {'horizontal':1}
+        self.class2quad = {self.quad2class[t]:t for t in self.quad2class}
+        
         self.type_mean_size = {
             'chair': [0.55067555, 0.57861282, 0.84943989],
             'table': [1.24506055, 0.72456264, 0.66167052],

@@ -24,7 +24,6 @@ import random
 import numpy as np
 from datetime import datetime
 import argparse
-from datetime import datetime
 
 import torch
 import torch.nn as nn
@@ -35,7 +34,7 @@ from utils import pc_util
 from torch.utils.tensorboard import SummaryWriter
 import wandb
 
-wandb.init(project="weakly_pq_epn")
+wandb.init(project="weakly_pq_epn", name=f"pretrain-{datetime.now().strftime('%Y%m%d%H%M%S')}")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = BASE_DIR
@@ -230,13 +229,16 @@ def train_one_epoch():
     stat_dict = {}  # collect statistics
     bnm_scheduler.step()  # decay BN momentum
     net.train()
-    for batch_idx, batch_data_label in enumerate(TRAIN_DATALOADER):
+    for batch_idx, batch_data_label in enumerate(TRAIN_DATALOADER_WK):
         for key in batch_data_label:
             batch_data_label[key] = batch_data_label[key].to(device)
 
         # Forward pass
         optimizer.zero_grad()
         inputs = {'point_clouds': batch_data_label['point_clouds']}
+        
+        import IPython
+        IPython.embed()
         
         # Randomly augment the input point cloud
         ind, rot = random.choice([(0, 0), (1, np.pi / 2), (2, np.pi), (3, np.pi / 2 * 3)])
@@ -247,15 +249,15 @@ def train_one_epoch():
         inputs2 = {'point_clouds': torch.concat([(rotmat @ pc[:,:,:3, None])[:, :, :, 0], pc[:, :, 3:]], dim=2) }
         
         end_points = net(inputs)
-        # with torch.no_grad():
-        #     end_points2 = net(inputs2)
+        with torch.no_grad():
+            end_points2 = net(inputs2)
 
         
         # loss_equiv = torch.tensor(0.).cuda()
-        # for key in ["vote_features", "seed_features"] + [f"sa{i}_features" for i in range(1, 7)] :
-        #     loss_equiv += (torch.cosine_similarity(end_points[key], end_points2[key]).mean() - 1).abs()
+        for key in ["seed_features"]:
+            loss_equiv += (torch.cosine_similarity(end_points[key], end_points2[key]).mean() - 1).abs()
         
-        # # loss_equiv *= 0
+        # loss_equiv *= 0
         # end_points['loss_equiv'] = loss_equiv
         
         
@@ -295,6 +297,7 @@ def train_one_epoch():
             # assert (key not in end_points), '{} should not in end_points.'.format(key)
             end_points[key] = batch_data_label[key]
         loss, end_points = criterion(end_points, DATASET_CONFIG, FLAGS=FLAGS)
+        # loss += loss_equiv + loss_equiv2
         loss.backward()
         
         # batch_interval = 10
@@ -440,7 +443,7 @@ def evaluate_one_epoch(eval_few=False):
         log_string('result_table: {}'.format(result_table))
 
 
-    # # Evaluate Layout Estimation
+    # Evaluate Layout Estimation
     for ap_idx, ap_calculator in enumerate(quad_ap_calculator_list):
         metrics_dict = ap_calculator.compute_metrics()
         f1 = ap_calculator.compute_F1()

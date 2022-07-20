@@ -17,12 +17,12 @@ sys.path.append(os.path.join(ROOT_DIR, 'utils'))
 from utils import pc_util
 from backbone_module import *
 from voting_module import VotingModule
-from proposal_module import ProposalModule
+from proposal_module import ProposalModule, QuadProposalModule
 from dump_helper import dump_results, dump_examples
 from loss_helper import get_loss
 
 
-class VoteNet(nn.Module):
+class VoteNetPQ(nn.Module):
     r"""
         A deep neural network for 3D object detection with end-to-end optimizable hough voting.
 
@@ -68,6 +68,7 @@ class VoteNet(nn.Module):
         # Vote aggregation and detection
         self.pnet = ProposalModule(num_class, num_heading_bin, num_size_cluster,
             mean_size_arr, num_proposal, sampling, seed_feat_dim=64)
+        self.qnet = QuadProposalModule(hidden_dim=64)
 
     def forward(self, inputs):
         """ Forward pass of the network
@@ -84,12 +85,13 @@ class VoteNet(nn.Module):
         Returns:
             end_points: dict
         """
-        end_points = {}
+        end_points = {"point_clouds": inputs['point_clouds']}
 
         end_points = self.backbone_net(inputs['point_clouds'], end_points)
         # --------- HOUGH VOTING ---------
         xyz = end_points['seed_xyz']  # [B, Np, 3]
         features = end_points['seed_features']  # [B, C, Np]
+        _, _, end_points = self.qnet(features, base_xyz=xyz, end_points=end_points, prefix="")
 
         seed_rot_pred = pc_util.class2angle(end_points['point_pose_pred'].float(), 0, self.n_rot)
         seed_mask = end_points['seed_mask_pred']
@@ -103,5 +105,6 @@ class VoteNet(nn.Module):
         end_points['vote_features'] = features
 
         end_points = self.pnet(xyz, features, end_points, FLAGS=self.FLAGS)
+        
 
         return end_points

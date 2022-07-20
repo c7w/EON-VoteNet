@@ -166,7 +166,7 @@ class KPBackboneFullyConv(nn.Module):
                             out_dim=64,
                             norm_2d=norm_2d, n_rot=self.n_rot, no_downsample=True,
                             )
-        print(self)
+        # print(self)
 
     def _break_up_pc(self, pc):
         xyz = pc[..., 0:3].contiguous()

@@ -22,6 +22,10 @@ class ScannetDatasetConfig(object):
             'window':6,'bookshelf':7,'picture':8, 'counter':9, 'desk':10, 'curtain':11,
             'refrigerator':12, 'showercurtrain':13, 'toilet':14, 'sink':15, 'bathtub':16, 'garbagebin':17}  
         self.class2type = {self.type2class[t]:t for t in self.type2class}
+
+        self.quad2class = {'horizontal':1}
+        self.class2quad = {self.quad2class[t]:t for t in self.quad2class}
+
         self.nyu40ids = np.array([3,4,5,6,7,8,9,10,11,12,14,16,24,28,33,34,36,39])
         self.nyu40id2class = {nyu40id: i for i,nyu40id in enumerate(list(self.nyu40ids))}
         self.mean_size_arr = np.load(os.path.join(ROOT_DIR,'scannet/meta_data/scannet_means.npz'))['arr_0']
@@ -89,3 +93,12 @@ def rotate_aligned_boxes(input_boxes, rot_mat):
     new_lengths = np.stack((new_dx, new_dy, lengths[:,2]), axis=1)
                   
     return np.concatenate([new_centers, new_lengths], axis=1)
+
+
+def rotate_quad(rectangle, rot_mat):    
+    centers = rectangle[:,0:3]    
+    new_centers = np.dot(centers, np.transpose(rot_mat))
+    normal_vector = rectangle[:,3:6]
+    new_normal_vector = np.dot(normal_vector, np.transpose(rot_mat))
+                  
+    return np.concatenate([new_centers, new_normal_vector,rectangle[:,6:8]], axis=1)
