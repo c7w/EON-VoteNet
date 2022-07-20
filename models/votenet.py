@@ -20,6 +20,7 @@ from voting_module import VotingModule
 from proposal_module import ProposalModule
 from dump_helper import dump_results, dump_examples
 from loss_helper import get_loss
+from weak_loss_helper import get_weak_loss
 
 
 class VoteNet(nn.Module):

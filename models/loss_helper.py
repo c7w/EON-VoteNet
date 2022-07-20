@@ -482,7 +482,7 @@ def get_loss(end_points, config, FLAGS=None):
     # quad_loss = quad_loss_sum+ 0.5*quad_score_loss_sum
     quad_loss = 0
     
-    loss = vote_loss + 0.5 * object_loss + 0.00 * quad_loss
+    loss = vote_loss + 1.0 * object_loss + 0.00 * quad_loss
     
     loss *= 10
     end_points['loss'] = loss

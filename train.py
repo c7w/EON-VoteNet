@@ -162,8 +162,8 @@ from models import pq_votenet
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 num_input_channel = int(FLAGS.use_color) * 3 + int(not FLAGS.no_height) * 1
 
-# Detector = votenet.VoteNet
-Detector = pq_votenet.VoteNetPQ
+Detector = votenet.VoteNet
+# Detector = pq_votenet.VoteNetPQ
 
 net = Detector(num_class=DATASET_CONFIG.num_class,
                num_heading_bin=DATASET_CONFIG.num_heading_bin,
@@ -184,6 +184,7 @@ if torch.cuda.device_count() > 1:
     net = nn.DataParallel(net)
 net.to(device)
 criterion = votenet.get_loss
+criterion_weak = votenet.get_weak_loss
 
 # Load the Adam optimizer
 optimizer = optim.Adam(net.parameters(), lr=BASE_LEARNING_RATE, weight_decay=FLAGS.weight_decay)
@@ -247,6 +248,11 @@ def train_one_epoch():
         inputs2 = {'point_clouds': torch.concat([(rotmat @ pc[:,:,:3, None])[:, :, :, 0], pc[:, :, 3:]], dim=2) }
         
         end_points = net(inputs)
+        # end_points2 = net(inputs2)
+        
+        # import IPython
+        # IPython.embed()
+        
         # with torch.no_grad():
         #     end_points2 = net(inputs2)
 
@@ -338,8 +344,8 @@ def evaluate_one_epoch(eval_few=False):
     ap_calculator_list = [APCalculator(ap_iou_thresh=iou_thresh,
                                        class2type_map=DATASET_CONFIG.class2type) for iou_thresh in [0.25, 0.5]]
     
-    quad_ap_calculator_list = [QuadAPCalculator(iou_thresh, DATASET_CONFIG.class2quad) \
-                        for iou_thresh in [0.25, 0.5]]
+    # quad_ap_calculator_list = [QuadAPCalculator(iou_thresh, DATASET_CONFIG.class2quad) \
+    #                     for iou_thresh in [0.25, 0.5]]
     
     net.eval()  # set model to eval mode (for bn and dp)
     for batch_idx, batch_data_label in enumerate(TEST_DATALOADER):
@@ -375,14 +381,14 @@ def evaluate_one_epoch(eval_few=False):
         for ap_calculator in ap_calculator_list:
             ap_calculator.step(batch_pred_map_cls, batch_gt_map_cls)
         
-        batch_pred_quad_map_cls,pred_quad_mask,batch_pred_quad_corner = parse_quad_predictions(end_points, CONFIG_DICT, "")
-        batch_gt_quad_map_cls,batch_gt_quad_corner = parse_quad_groundtruths(end_points, CONFIG_DICT)
-        for ap_calculator in quad_ap_calculator_list:
-            ap_calculator.step(batch_pred_quad_map_cls, 
-                               batch_gt_quad_map_cls,
-                               batch_pred_quad_corner,
-                               batch_gt_quad_corner,
-                               end_points['horizontal_quads'])
+        # batch_pred_quad_map_cls,pred_quad_mask,batch_pred_quad_corner = parse_quad_predictions(end_points, CONFIG_DICT, "")
+        # batch_gt_quad_map_cls,batch_gt_quad_corner = parse_quad_groundtruths(end_points, CONFIG_DICT)
+        # for ap_calculator in quad_ap_calculator_list:
+        #     ap_calculator.step(batch_pred_quad_map_cls, 
+        #                        batch_gt_quad_map_cls,
+        #                        batch_pred_quad_corner,
+        #                        batch_gt_quad_corner,
+        #                        end_points['horizontal_quads'])
 
         dump_result = False
         if dump_result:
@@ -440,19 +446,19 @@ def evaluate_one_epoch(eval_few=False):
         log_string('result_table: {}'.format(result_table))
 
 
-    # # Evaluate Layout Estimation
-    for ap_idx, ap_calculator in enumerate(quad_ap_calculator_list):
-        metrics_dict = ap_calculator.compute_metrics()
-        f1 = ap_calculator.compute_F1()
-        log_string(f'=====================>Layout Estimation<=====================')
-        log_string(f'F1 scores: {f1}')
-        log_string(f'mAP: {metrics_dict["mAP"]}')
-        # logger.info(f'=====================>{prefix} IOU THRESH: {AP_IOU_THRESHOLDS[i]}<=====================')
-        # for key in metrics_dict:
-        #     logger.info(f'{key} {metrics_dict[key]}')
-        wandb.log({f"val-ap{ap_idx}/F1": f1}, step=net.i)
-        wandb.log({f"val-ap{ap_idx}/Layout-mAP": metrics_dict["mAP"]}, step=net.i)
-        ap_calculator.reset()
+    # # # Evaluate Layout Estimation
+    # for ap_idx, ap_calculator in enumerate(quad_ap_calculator_list):
+    #     metrics_dict = ap_calculator.compute_metrics()
+    #     f1 = ap_calculator.compute_F1()
+    #     log_string(f'=====================>Layout Estimation<=====================')
+    #     log_string(f'F1 scores: {f1}')
+    #     log_string(f'mAP: {metrics_dict["mAP"]}')
+    #     # logger.info(f'=====================>{prefix} IOU THRESH: {AP_IOU_THRESHOLDS[i]}<=====================')
+    #     # for key in metrics_dict:
+    #     #     logger.info(f'{key} {metrics_dict[key]}')
+    #     wandb.log({f"val-ap{ap_idx}/F1": f1}, step=net.i)
+    #     wandb.log({f"val-ap{ap_idx}/Layout-mAP": metrics_dict["mAP"]}, step=net.i)
+    #     ap_calculator.reset()
 
     mean_loss = stat_dict['loss'] / float(batch_idx + 1)
     return mean_loss
@@ -474,7 +480,7 @@ def train(start_epoch):
             evaluate_one_epoch()
             return
         train_one_epoch()
-        val_freq = 20
+        val_freq = 5
         is_test_epoch = (EPOCH_CNT % val_freq == val_freq - 1)
         if is_test_epoch:
             # eval_few = ((EPOCH_CNT != MAX_EPOCH - 1) and FLAGS.dataset=='sunrgbd')
