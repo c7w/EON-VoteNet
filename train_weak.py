@@ -19,7 +19,7 @@ Then go to local browser and type:
 
 import os
 
-from models.weak_loss_helper import get_weak_loss
+from models.weak_loss_helper import get_weak_loss, get_weak_loss_mean_teacher
 os.environ["HTTPS_PROXY"] = "http://10.0.0.14:50000"
 import sys
 import random
@@ -79,6 +79,7 @@ parser.add_argument('--end_proportion', default=0.1, type=float)
 parser.add_argument('--use_quad', default=1, type=int)
 parser.add_argument('--layout_estimation', default=0, type=int)
 parser.add_argument('--val_freq', default=5, type=int)
+parser.add_argument('--weak_loss', default=0, type=int)  # 0 for None, 1 for augment loss, 2 for augment loss + mean teacher
 FLAGS = parser.parse_args()
 FLAGS.num_point = 20000 if FLAGS.dataset == 'sunrgbd' else 40000
 
@@ -189,6 +190,21 @@ net = Detector(num_class=DATASET_CONFIG.num_class,
                sampling=FLAGS.cluster_sampling,
                n_rot=FLAGS.n_rot,
                FLAGS=FLAGS)
+
+if FLAGS.weak_loss == 2:
+    ema_net = Detector(num_class=DATASET_CONFIG.num_class,
+                num_heading_bin=DATASET_CONFIG.num_heading_bin,
+                num_size_cluster=DATASET_CONFIG.num_size_cluster,
+                mean_size_arr=DATASET_CONFIG.mean_size_arr,
+                num_proposal=FLAGS.num_target,
+                input_feature_dim=num_input_channel,
+                vote_factor=FLAGS.vote_factor,
+                sampling=FLAGS.cluster_sampling,
+                n_rot=FLAGS.n_rot,
+                FLAGS=FLAGS)
+    for name, parameter in ema_net.named_parameters():
+        parameter.detach_()
+
 wandb.watch(net)
 writer = SummaryWriter()
 
@@ -197,6 +213,8 @@ if torch.cuda.device_count() > 1:
     # dim = 0 [30, xxx] -> [10, ...], [10, ...], [10, ...] on 3 GPUs
     net = nn.DataParallel(net)
 net.to(device)
+if FLAGS.weak_loss == 2:
+    ema_net.to(device)
 criterion = votenet.get_loss
 criterion_weak = votenet.get_weak_loss
 
@@ -227,6 +245,8 @@ if CHECKPOINT_PATH is not None and os.path.isfile(CHECKPOINT_PATH):
     print('loading checkpoint from {}'.format(CHECKPOINT_PATH))
     checkpoint = torch.load(CHECKPOINT_PATH)
     net.load_state_dict(checkpoint['model_state_dict'], strict=False)  # TODO : Change strict to True
+    if FLAGS.weak_loss == 2:
+        ema_net.load_state_dict(checkpoint['model_state_dict'], strict=False)
 
 
 # ------------------------------------------------------------------------- GLOBAL CONFIG END
@@ -255,11 +275,22 @@ def train_one_epoch():
         
         end_points = net(inputs)
         
-        weak_batch_data = get_weak_entry()
-        inputs1 = {'point_clouds': weak_batch_data['point_clouds']}
-        weak_loss = 500. * get_weak_loss(inputs1, net, FLAGS)
-        end_points['weak_loss'] = weak_loss
-        weak_loss.backward()
+        # === Unsupervised loss ===
+        if FLAGS.weak_loss == 1:
+            weak_batch_data = get_weak_entry()
+            inputs1 = {'point_clouds': weak_batch_data['point_clouds']}
+            weak_loss = 500. * get_weak_loss(inputs1, net, FLAGS)
+            end_points['weak_loss'] = weak_loss
+            weak_loss.backward()
+        
+        elif FLAGS.weak_loss == 2:
+            # Mean Teacher
+            weak_batch_data = get_weak_entry()
+            inputs1 = {'point_clouds': weak_batch_data['point_clouds']}
+            weak_loss = 5. * get_weak_loss_mean_teacher(inputs1, net, ema_net, FLAGS)
+            end_points['weak_loss_mean_teacher'] = weak_loss
+            weak_loss.backward()
+        # === Unsupervised loss ===
 
         # Compute loss and gradients, update parameters.
         for key in batch_data_label:
@@ -274,6 +305,23 @@ def train_one_epoch():
         #     writer.add_scalars("train/grad", grad_norm, net.i)
         
         optimizer.step()
+        
+        if FLAGS.weak_loss == 2:
+            def update_ema_variables(model, ema_model, alpha):
+                for ema_param, param in zip(ema_model.parameters(), model.parameters()):
+                    ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
+            
+            def get_ema_alpha(step_cnt):
+                if step_cnt <= 500:
+                    return 0.5 * ((step_cnt/500) ** 2)
+                
+                elif step_cnt <= 1000:
+                    return 0.999 - 0.499 * (((step_cnt-1000)/500)**2)
+                
+                else:
+                    return 0.999
+            
+            update_ema_variables(net, ema_net, get_ema_alpha(net.i))
 
         # Accumulate statistics and print out
         for key in end_points:
@@ -453,16 +501,17 @@ def train(start_epoch):
         if is_test_epoch:
             eval_few = ((EPOCH_CNT != MAX_EPOCH - 1) and FLAGS.dataset=='sunrgbd')
             loss = evaluate_one_epoch(eval_few=eval_few)
-        # Save checkpoint
-        save_dict = {'epoch': epoch+1, # after training one epoch, the start_epoch should be epoch+1
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'loss': loss,
-                    }
-        try: # with nn.DataParallel() the net is added as a submodule of DataParallel
-            save_dict['model_state_dict'] = net.module.state_dict()
-        except:
-            save_dict['model_state_dict'] = net.state_dict()
-        torch.save(save_dict, os.path.join(LOG_DIR, 'checkpoint.tar'))
+        
+            # Save checkpoint
+            save_dict = {'epoch': epoch+1, # after training one epoch, the start_epoch should be epoch+1
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'loss': loss,
+                        }
+            try: # with nn.DataParallel() the net is added as a submodule of DataParallel
+                save_dict['model_state_dict'] = net.module.state_dict()
+            except:
+                save_dict['model_state_dict'] = net.state_dict()
+            torch.save(save_dict, os.path.join(LOG_DIR, f'checkpoint-{net.i}.tar'))
 
 
 def set_seed(seed):

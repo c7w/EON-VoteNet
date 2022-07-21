@@ -67,3 +67,15 @@ def get_weak_loss(end_points, net, config, augment=["perturbation", "orthogonal"
     
     loss_name = ["vote_features", "seed_features"]
     return weak_loss(end_points1, end_points2, loss_name)
+
+def get_weak_loss_mean_teacher(end_points, net, ema_net, augment=["perturbation", "orthogonal"], loss_name=["vote_features", "seed_features"]):
+    f1 = net(end_points)
+    with torch.no_grad():
+        f2 = ema_net(end_points)
+        
+    weak_loss = torch.tensor(0.).cuda()
+    for key in f1.keys():
+        if 'feature' in key:
+            weak_loss += ((f1[key] - f2[key]) ** 2).mean()
+    
+    return weak_loss
