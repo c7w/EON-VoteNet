@@ -76,8 +76,9 @@ parser.add_argument('--is_eval', action='store_true')
 parser.add_argument('--dataset_folder', default='scan2cad_detection_labels')
 parser.add_argument('--nworkers', default=8, type=int)
 parser.add_argument('--end_proportion', default=0.1, type=float)
-parser.add_argument('--use_quad', default=True, type=bool)
-parser.add_argument('--layout_estimation', default=False, type=bool)
+parser.add_argument('--use_quad', default=1, type=int)
+parser.add_argument('--layout_estimation', default=0, type=int)
+parser.add_argument('--val_freq', default=5, type=int)
 FLAGS = parser.parse_args()
 FLAGS.num_point = 20000 if FLAGS.dataset == 'sunrgbd' else 40000
 
@@ -121,6 +122,8 @@ import json
 CONFIG_FOUT = open(os.path.join(LOG_DIR, 'config.txt'), 'w')
 CONFIG_FOUT.write(json.dumps(FLAGS.__dict__, ensure_ascii=False, indent=4) + '\n')
 CONFIG_FOUT.close()
+
+
 
 def log_string(out_str):
     LOG_FOUT.write(out_str + '\n')
@@ -174,6 +177,7 @@ if FLAGS.use_quad:
     Detector = pq_votenet.VoteNetPQ
 else:
     Detector = votenet.VoteNet
+
 
 net = Detector(num_class=DATASET_CONFIG.num_class,
                num_heading_bin=DATASET_CONFIG.num_heading_bin,
@@ -248,8 +252,8 @@ def train_one_epoch():
         # Forward pass
         optimizer.zero_grad()
         inputs = {'point_clouds': batch_data_label['point_clouds']}
-        end_points = net(inputs)
         
+        end_points = net(inputs)
         
         weak_batch_data = get_weak_entry()
         inputs1 = {'point_clouds': weak_batch_data['point_clouds']}
@@ -277,7 +281,7 @@ def train_one_epoch():
                 if key not in stat_dict: stat_dict[key] = 0
                 stat_dict[key] += end_points[key].item()
 
-        batch_interval = 10
+        batch_interval = 5
         if (batch_idx + 1) % batch_interval == 0:
             log_string(' ---- batch: %03d ----' % (batch_idx + 1))
             net.i += 1
@@ -307,7 +311,7 @@ def evaluate_one_epoch(eval_few=False):
     
     if FLAGS.layout_estimation:
         quad_ap_calculator_list = [QuadAPCalculator(iou_thresh, DATASET_CONFIG.class2quad) \
-                            for iou_thresh in [0.25, 0.5]]
+                             for iou_thresh in [0.25, 0.5]]
     
     net.eval()  # set model to eval mode (for bn and dp)
     for batch_idx, batch_data_label in enumerate(TEST_DATALOADER):
@@ -409,7 +413,7 @@ def evaluate_one_epoch(eval_few=False):
         log_string('result_table: {}'.format(result_table))
 
 
-    # Evaluate Layout Estimation
+    # # # Evaluate Layout Estimation
     if FLAGS.layout_estimation:
         for ap_idx, ap_calculator in enumerate(quad_ap_calculator_list):
             metrics_dict = ap_calculator.compute_metrics()
@@ -444,7 +448,7 @@ def train(start_epoch):
             evaluate_one_epoch()
             return
         train_one_epoch()
-        val_freq = 5
+        val_freq = FLAGS.val_freq
         is_test_epoch = (EPOCH_CNT % val_freq == val_freq - 1)
         if is_test_epoch:
             eval_few = ((EPOCH_CNT != MAX_EPOCH - 1) and FLAGS.dataset=='sunrgbd')
