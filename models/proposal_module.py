@@ -157,17 +157,24 @@ class QuadProposalModule(nn.Module):
         local_normals = torch.zeros((batch_size, 1024, 3)).cuda()
         for i in range(batch_size):
             point_cloud = pc[i][:, 0:3]
-            pc_center = point_cloud.mean(dim=0)
+            
+            # Randomly downsample point_cloud
+            SAMPLE_CNT = 4000
+            import random
+            selected_idx = random.sample(range(layout_pt_cnt), SAMPLE_CNT)
+            point_cloud = point_cloud[selected_idx, :]
+            
+            pc_center = point_cloud.mean(dim=0)  # (3, )
             # Normal similarity: calc and statistic analysis
             import open3d as o3d
-            param = o3d.geometry.KDTreeSearchParamHybrid(radius=0.08, max_nn=20)
+            param = o3d.geometry.KDTreeSearchParamHybrid(radius=0.20, max_nn=20)
             pcd = o3d.geometry.PointCloud()
             pcd.points = o3d.utility.Vector3dVector(point_cloud.cpu().numpy())
             pcd.estimate_normals(search_param=param)
-            normals = np.asarray(pcd.normals)
+            normals = np.asarray(pcd.normals)  # (SAMPLE_CNT, 3)
             
-            reverse_mask = ((point_cloud - pc_center).cpu().numpy().reshape(layout_pt_cnt, 1, 3) \
-                    @ normals.reshape(layout_pt_cnt, 3, 1)).reshape(layout_pt_cnt) < 0
+            reverse_mask = ((point_cloud - pc_center).cpu().numpy().reshape(SAMPLE_CNT, 1, 3) \
+                    @ normals.reshape(SAMPLE_CNT, 3, 1)).reshape(SAMPLE_CNT) < 0
             
             normals[reverse_mask] = -normals[reverse_mask]
             normals = - normals
@@ -178,7 +185,7 @@ class QuadProposalModule(nn.Module):
             neigh_dist, neigh_ind = neigh.kneighbors(end_points['quad_center'][i].detach().cpu().numpy())
             
             # neigh_ind (1024, 10)
-            # normals (40000, 3)
+            # normals (SAMPLE_CNT, 3)
             selected_normals = np.stack([normals[neigh_ind[i], :].mean(axis=0) for i in range(1024)], axis=0)
             selected_normals[:, 2] = 0.
             selected_normals = selected_normals / np.linalg.norm(selected_normals, axis=1)[:, None]
