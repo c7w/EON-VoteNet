@@ -18,6 +18,8 @@ Then go to local browser and type:
 """
 
 import os
+
+from models.weak_loss_helper import get_weak_loss
 os.environ["HTTPS_PROXY"] = "http://10.0.0.14:50000"
 import sys
 import random
@@ -238,53 +240,15 @@ def train_one_epoch():
         # Forward pass
         optimizer.zero_grad()
         inputs = {'point_clouds': batch_data_label['point_clouds']}
-        
-        # Randomly augment the input point cloud
-        ind, rot = random.choice([(0, 0), (1, np.pi / 2), (2, np.pi), (3, np.pi / 2 * 3)])
-        delta_rot = (2*random.random()-1) * np.pi / 12  # -15 ~ 15 degree
-        rot += delta_rot
-        rotmat = pc_util.batch_rotz(torch.zeros(inputs['point_clouds'].shape[:2]).fill_(rot)).cuda()
-        pc = inputs['point_clouds']
-        inputs2 = {'point_clouds': torch.concat([(rotmat @ pc[:,:,:3, None])[:, :, :, 0], pc[:, :, 3:]], dim=2) }
-        
         end_points = net(inputs)
+        
+        
+        weak_batch_data = get_weak_entry()
+        inputs1 = {'point_clouds': weak_batch_data['point_clouds']}
+        weak_loss = 500. * get_weak_loss(inputs1, net, FLAGS)
+        end_points['weak_loss'] = weak_loss
+        weak_loss.backward()
         # end_points2 = net(inputs2)
-        
-        # import IPython
-        # IPython.embed()
-        
-        # with torch.no_grad():
-        #     end_points2 = net(inputs2)
-
-        
-        # loss_equiv = torch.tensor(0.).cuda()
-        # for key in ["vote_features", "seed_features"] + [f"sa{i}_features" for i in range(1, 7)] :
-        #     loss_equiv += (torch.cosine_similarity(end_points[key], end_points2[key]).mean() - 1).abs()
-        
-        # # loss_equiv *= 0
-        # end_points['loss_equiv'] = loss_equiv
-        
-        
-        # inputs1 = {'point_clouds': get_weak_entry()['point_clouds']}
-        # ind, rot = random.choice([(0, 0), (1, np.pi / 2), (2, np.pi), (3, np.pi / 2 * 3)])
-        # delta_rot = (2*random.random()-1) * np.pi / 12  # -15 ~ 15 degree
-        # rotmat = pc_util.batch_rotz(torch.zeros(inputs1['point_clouds'].shape[:2]).fill_(rot)).cuda()
-        # pc = inputs1['point_clouds']
-        # inputs3 = {'point_clouds': torch.concat([(rotmat @ pc[:,:,:3, None])[:, :, :, 0], pc[:, :, 3:]], dim=2) }
-        
-        # end_points1 = net(inputs1)
-        # with torch.no_grad():
-        #     end_points3 = net(inputs3)
-        
-        # loss_equiv2 = torch.tensor(0.).cuda()
-        # for key in ["vote_features", "seed_features"]: # + [f"sa{i}_features" for i in range(1, 7)] :
-        #     loss_equiv2 += (torch.cosine_similarity(end_points1[key], end_points3[key]).mean() - 1).abs()
-        
-        # loss_equiv2 *= 5000.0
-        # end_points['loss_equiv2'] = loss_equiv2
-        
-        # import IPython
-        # IPython.embed(header="123123")
         
         ################## profile timing ####################
         # with torch.autograd.profiler.profile(use_cuda=True,record_shapes=True) as prof:
@@ -426,7 +390,7 @@ def evaluate_one_epoch(eval_few=False):
             log_string('eval %s: %f' % (key, metrics_dict[key]))
         # writer.add_scalars(f"val/ap{ap_idx}", metrics_dict, net.i)
         
-        log_dict = {(f"val-ap{ap_idx}/" + k): v / (float(batch_idx + 1)) for k, v in metrics_dict.items()}
+        log_dict = {(f"val-ap{ap_idx}/" + k): v for k, v in metrics_dict.items()}
         # log_dict["i"] = net.i
         loss_dict = {
             f"val-ap{ap_idx}-mAP/mAP": log_dict[f"val-ap{ap_idx}/mAP"],
@@ -484,7 +448,7 @@ def train(start_epoch):
         is_test_epoch = (EPOCH_CNT % val_freq == val_freq - 1)
         if is_test_epoch:
             # eval_few = ((EPOCH_CNT != MAX_EPOCH - 1) and FLAGS.dataset=='sunrgbd')
-            eval_few = True
+            eval_few = False
             loss = evaluate_one_epoch(eval_few=eval_few)
         # Save checkpoint
         save_dict = {'epoch': epoch+1, # after training one epoch, the start_epoch should be epoch+1

@@ -74,6 +74,7 @@ parser.add_argument('--is_eval', action='store_true')
 parser.add_argument('--dataset_folder', default='scan2cad_detection_labels')
 parser.add_argument('--nworkers', default=8, type=int)
 parser.add_argument('--end_proportion', default=0.1, type=float)
+parser.add_argument('--use_quad', default=True, type=bool)
 FLAGS = parser.parse_args()
 FLAGS.num_point = 20000 if FLAGS.dataset == 'sunrgbd' else 40000
 
@@ -113,6 +114,12 @@ if not os.path.exists(LOG_DIR):
 LOG_FOUT = open(os.path.join(LOG_DIR, 'log_test.txt' if FLAGS.is_eval else 'log_train.txt'), 'w')
 LOG_FOUT.write(str(FLAGS) + '\n')
 
+import json
+CONFIG_FOUT = open(os.path.join(LOG_DIR, 'config.txt'), 'w')
+CONFIG_FOUT.write(json.dumps(FLAGS.__dict__, ensure_ascii=False, indent=4) + '\n')
+CONFIG_FOUT.close()
+
+
 
 def log_string(out_str):
     LOG_FOUT.write(out_str + '\n')
@@ -138,13 +145,13 @@ from scan2cad.scan2cad_config import Scan2CadDatasetConfig
 DATASET_CONFIG = Scan2CadDatasetConfig(FLAGS.n_rot)
 TRAIN_DATASET = Scan2CadDetectionDataset('train', num_points=NUM_POINT, dataset_folder=FLAGS.dataset_folder,
                                          augment=True, use_height=(not FLAGS.no_height),
-                                         n_rot=FLAGS.n_rot, start_proportion=0.0, end_proportion=FLAGS.end_proportion)
+                                         n_rot=FLAGS.n_rot, start_proportion=0.0, end_proportion=FLAGS.end_proportion, use_quad=FLAGS.use_quad)
 TRAIN_DATASET_WK = Scan2CadDetectionDataset('train', num_points=NUM_POINT, dataset_folder=FLAGS.dataset_folder,
                                          augment=True, use_height=(not FLAGS.no_height),
-                                         n_rot=FLAGS.n_rot, start_proportion=FLAGS.end_proportion, end_proportion=1.0)
+                                         n_rot=FLAGS.n_rot, start_proportion=FLAGS.end_proportion, end_proportion=1.0, use_quad=FLAGS.use_quad)
 TEST_DATASET = Scan2CadDetectionDataset('val', num_points=NUM_POINT, dataset_folder=FLAGS.dataset_folder,
                                         augment=False, use_height=(not FLAGS.no_height),
-                                        n_rot=FLAGS.n_rot)
+                                        n_rot=FLAGS.n_rot, use_quad=FLAGS.use_quad)
 
 print(len(TRAIN_DATASET), len(TEST_DATASET))
 TRAIN_DATALOADER = DataLoader(TRAIN_DATASET, batch_size=BATCH_SIZE,
@@ -162,8 +169,11 @@ from models import pq_votenet
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 num_input_channel = int(FLAGS.use_color) * 3 + int(not FLAGS.no_height) * 1
 
-Detector = votenet.VoteNet
-# Detector = pq_votenet.VoteNetPQ
+if FLAGS.use_quad:
+    Detector = pq_votenet.VoteNetPQ
+else:
+    Detector = votenet.VoteNet
+
 
 net = Detector(num_class=DATASET_CONFIG.num_class,
                num_heading_bin=DATASET_CONFIG.num_heading_bin,
@@ -426,7 +436,7 @@ def evaluate_one_epoch(eval_few=False):
             log_string('eval %s: %f' % (key, metrics_dict[key]))
         # writer.add_scalars(f"val/ap{ap_idx}", metrics_dict, net.i)
         
-        log_dict = {(f"val-ap{ap_idx}/" + k): v / (float(batch_idx + 1)) for k, v in metrics_dict.items()}
+        log_dict = {(f"val-ap{ap_idx}/" + k): v for k, v in metrics_dict.items()}
         # log_dict["i"] = net.i
         loss_dict = {
             f"val-ap{ap_idx}-mAP/mAP": log_dict[f"val-ap{ap_idx}/mAP"],
