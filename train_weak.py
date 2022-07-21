@@ -76,6 +76,8 @@ parser.add_argument('--is_eval', action='store_true')
 parser.add_argument('--dataset_folder', default='scan2cad_detection_labels')
 parser.add_argument('--nworkers', default=8, type=int)
 parser.add_argument('--end_proportion', default=0.1, type=float)
+parser.add_argument('--use_quad', default=True, type=bool)
+parser.add_argument('--layout_estimation', default=False, type=bool)
 FLAGS = parser.parse_args()
 FLAGS.num_point = 20000 if FLAGS.dataset == 'sunrgbd' else 40000
 
@@ -115,6 +117,10 @@ if not os.path.exists(LOG_DIR):
 LOG_FOUT = open(os.path.join(LOG_DIR, 'log_test.txt' if FLAGS.is_eval else 'log_train.txt'), 'w')
 LOG_FOUT.write(str(FLAGS) + '\n')
 
+import json
+CONFIG_FOUT = open(os.path.join(LOG_DIR, 'config.txt'), 'w')
+CONFIG_FOUT.write(json.dumps(FLAGS.__dict__, ensure_ascii=False, indent=4) + '\n')
+CONFIG_FOUT.close()
 
 def log_string(out_str):
     LOG_FOUT.write(out_str + '\n')
@@ -140,13 +146,13 @@ from scan2cad.scan2cad_config import Scan2CadDatasetConfig
 DATASET_CONFIG = Scan2CadDatasetConfig(FLAGS.n_rot)
 TRAIN_DATASET = Scan2CadDetectionDataset('train', num_points=NUM_POINT, dataset_folder=FLAGS.dataset_folder,
                                          augment=True, use_height=(not FLAGS.no_height),
-                                         n_rot=FLAGS.n_rot, start_proportion=0.0, end_proportion=FLAGS.end_proportion)
+                                         n_rot=FLAGS.n_rot, start_proportion=0.0, end_proportion=FLAGS.end_proportion, use_quad=FLAGS.use_quad)
 TRAIN_DATASET_WK = Scan2CadDetectionDataset('train', num_points=NUM_POINT, dataset_folder=FLAGS.dataset_folder,
                                          augment=True, use_height=(not FLAGS.no_height),
-                                         n_rot=FLAGS.n_rot, start_proportion=FLAGS.end_proportion, end_proportion=1.0)
+                                         n_rot=FLAGS.n_rot, start_proportion=FLAGS.end_proportion, end_proportion=1.0, use_quad=FLAGS.use_quad)
 TEST_DATASET = Scan2CadDetectionDataset('val', num_points=NUM_POINT, dataset_folder=FLAGS.dataset_folder,
                                         augment=False, use_height=(not FLAGS.no_height),
-                                        n_rot=FLAGS.n_rot)
+                                        n_rot=FLAGS.n_rot, use_quad=FLAGS.use_quad)
 
 print(len(TRAIN_DATASET), len(TEST_DATASET))
 TRAIN_DATALOADER = DataLoader(TRAIN_DATASET, batch_size=BATCH_SIZE,
@@ -164,8 +170,10 @@ from models import pq_votenet
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 num_input_channel = int(FLAGS.use_color) * 3 + int(not FLAGS.no_height) * 1
 
-Detector = votenet.VoteNet
-# Detector = pq_votenet.VoteNetPQ
+if FLAGS.use_quad:
+    Detector = pq_votenet.VoteNetPQ
+else:
+    Detector = votenet.VoteNet
 
 net = Detector(num_class=DATASET_CONFIG.num_class,
                num_heading_bin=DATASET_CONFIG.num_heading_bin,
@@ -248,17 +256,6 @@ def train_one_epoch():
         weak_loss = 500. * get_weak_loss(inputs1, net, FLAGS)
         end_points['weak_loss'] = weak_loss
         weak_loss.backward()
-        # end_points2 = net(inputs2)
-        
-        ################## profile timing ####################
-        # with torch.autograd.profiler.profile(use_cuda=True,record_shapes=True) as prof:
-        #     end_points = net(inputs)
-        # # print(prof.key_averages(group_by_input_shape=True).table(sort_by='cuda_time_total'))
-        # print(prof.key_averages().table(sort_by='cuda_time_total'))
-        # if batch_idx > 5:  # wait until stable
-        #     import IPython
-        #     IPython.embed()
-        ################## end profile timing ####################
 
         # Compute loss and gradients, update parameters.
         for key in batch_data_label:
@@ -308,8 +305,9 @@ def evaluate_one_epoch(eval_few=False):
     ap_calculator_list = [APCalculator(ap_iou_thresh=iou_thresh,
                                        class2type_map=DATASET_CONFIG.class2type) for iou_thresh in [0.25, 0.5]]
     
-    quad_ap_calculator_list = [QuadAPCalculator(iou_thresh, DATASET_CONFIG.class2quad) \
-                        for iou_thresh in [0.25, 0.5]]
+    if FLAGS.layout_estimation:
+        quad_ap_calculator_list = [QuadAPCalculator(iou_thresh, DATASET_CONFIG.class2quad) \
+                            for iou_thresh in [0.25, 0.5]]
     
     net.eval()  # set model to eval mode (for bn and dp)
     for batch_idx, batch_data_label in enumerate(TEST_DATALOADER):
@@ -345,14 +343,15 @@ def evaluate_one_epoch(eval_few=False):
         for ap_calculator in ap_calculator_list:
             ap_calculator.step(batch_pred_map_cls, batch_gt_map_cls)
         
-        # batch_pred_quad_map_cls,pred_quad_mask,batch_pred_quad_corner = parse_quad_predictions(end_points, CONFIG_DICT, "")
-        # batch_gt_quad_map_cls,batch_gt_quad_corner = parse_quad_groundtruths(end_points, CONFIG_DICT)
-        # for ap_calculator in quad_ap_calculator_list:
-        #     ap_calculator.step(batch_pred_quad_map_cls, 
-        #                        batch_gt_quad_map_cls,
-        #                        batch_pred_quad_corner,
-        #                        batch_gt_quad_corner,
-        #                        end_points['horizontal_quads'])
+        if FLAGS.layout_estimation:
+            batch_pred_quad_map_cls,pred_quad_mask,batch_pred_quad_corner = parse_quad_predictions(end_points, CONFIG_DICT, "")
+            batch_gt_quad_map_cls,batch_gt_quad_corner = parse_quad_groundtruths(end_points, CONFIG_DICT)
+            for ap_calculator in quad_ap_calculator_list:
+                ap_calculator.step(batch_pred_quad_map_cls, 
+                                batch_gt_quad_map_cls,
+                                batch_pred_quad_corner,
+                                batch_gt_quad_corner,
+                                end_points['horizontal_quads'])
 
         dump_result = False
         if dump_result:
@@ -410,19 +409,20 @@ def evaluate_one_epoch(eval_few=False):
         log_string('result_table: {}'.format(result_table))
 
 
-    # # # Evaluate Layout Estimation
-    # for ap_idx, ap_calculator in enumerate(quad_ap_calculator_list):
-    #     metrics_dict = ap_calculator.compute_metrics()
-    #     f1 = ap_calculator.compute_F1()
-    #     log_string(f'=====================>Layout Estimation<=====================')
-    #     log_string(f'F1 scores: {f1}')
-    #     log_string(f'mAP: {metrics_dict["mAP"]}')
-    #     # logger.info(f'=====================>{prefix} IOU THRESH: {AP_IOU_THRESHOLDS[i]}<=====================')
-    #     # for key in metrics_dict:
-    #     #     logger.info(f'{key} {metrics_dict[key]}')
-    #     wandb.log({f"val-ap{ap_idx}/F1": f1}, step=net.i)
-    #     wandb.log({f"val-ap{ap_idx}/Layout-mAP": metrics_dict["mAP"]}, step=net.i)
-    #     ap_calculator.reset()
+    # Evaluate Layout Estimation
+    if FLAGS.layout_estimation:
+        for ap_idx, ap_calculator in enumerate(quad_ap_calculator_list):
+            metrics_dict = ap_calculator.compute_metrics()
+            f1 = ap_calculator.compute_F1()
+            log_string(f'=====================>Layout Estimation<=====================')
+            log_string(f'F1 scores: {f1}')
+            log_string(f'mAP: {metrics_dict["mAP"]}')
+            # logger.info(f'=====================>{prefix} IOU THRESH: {AP_IOU_THRESHOLDS[i]}<=====================')
+            # for key in metrics_dict:
+            #     logger.info(f'{key} {metrics_dict[key]}')
+            wandb.log({f"val-ap{ap_idx}/F1": f1}, step=net.i)
+            wandb.log({f"val-ap{ap_idx}/Layout-mAP": metrics_dict["mAP"]}, step=net.i)
+            ap_calculator.reset()
 
     mean_loss = stat_dict['loss'] / float(batch_idx + 1)
     return mean_loss
@@ -447,8 +447,7 @@ def train(start_epoch):
         val_freq = 5
         is_test_epoch = (EPOCH_CNT % val_freq == val_freq - 1)
         if is_test_epoch:
-            # eval_few = ((EPOCH_CNT != MAX_EPOCH - 1) and FLAGS.dataset=='sunrgbd')
-            eval_few = False
+            eval_few = ((EPOCH_CNT != MAX_EPOCH - 1) and FLAGS.dataset=='sunrgbd')
             loss = evaluate_one_epoch(eval_few=eval_few)
         # Save checkpoint
         save_dict = {'epoch': epoch+1, # after training one epoch, the start_epoch should be epoch+1
