@@ -76,6 +76,7 @@ parser.add_argument('--nworkers', default=8, type=int)
 parser.add_argument('--end_proportion', default=0.1, type=float)
 parser.add_argument('--use_quad', default=1, type=int)
 parser.add_argument('--layout_estimation', default=0, type=int)
+parser.add_argument('--val_freq', default=5, type=int)
 FLAGS = parser.parse_args()
 FLAGS.num_point = 20000 if FLAGS.dataset == 'sunrgbd' else 40000
 
@@ -272,7 +273,7 @@ def train_one_epoch():
                 if key not in stat_dict: stat_dict[key] = 0
                 stat_dict[key] += end_points[key].item()
 
-        batch_interval = 10
+        batch_interval = 5
         if (batch_idx + 1) % batch_interval == 0:
             log_string(' ---- batch: %03d ----' % (batch_idx + 1))
             net.i += 1
@@ -439,7 +440,7 @@ def train(start_epoch):
             evaluate_one_epoch()
             return
         train_one_epoch()
-        val_freq = 5
+        val_freq = FLAGS.val_freq
         is_test_epoch = (EPOCH_CNT % val_freq == val_freq - 1)
         if is_test_epoch:
             eval_few = ((EPOCH_CNT != MAX_EPOCH - 1) and FLAGS.dataset=='sunrgbd')

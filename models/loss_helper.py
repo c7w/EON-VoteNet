@@ -446,18 +446,19 @@ def get_loss(end_points, config, FLAGS=None):
     end_points['box_loss'] = box_loss
     end_points, point_pose_loss, point_cls_loss, pose_acc_all = compute_point_pose_loss(end_points)
 
-    # # quadness loss
-    # quad_score_loss_sum, end_points = compute_quad_score_loss(end_points, config)
-    # end_points['quad_score_loss_sum'] = quad_score_loss_sum
-    
-    # # quad loss
-    # quad_center_loss_sum,quad_vector_loss_sum, quad_size_loss_sum, end_points = compute_quad_loss(end_points, config)
-    # end_points['quad_center_loss_sum'] = quad_center_loss_sum
-    # end_points['quad_vector_loss_sum'] = quad_vector_loss_sum
-    # end_points['quad_size_loss_sum'] = quad_size_loss_sum
+    if FLAGS.layout_estimation:
+        # quadness loss
+        quad_score_loss_sum, end_points = compute_quad_score_loss(end_points, config)
+        end_points['quad_score_loss_sum'] = quad_score_loss_sum
+        
+        # quad loss
+        quad_center_loss_sum,quad_vector_loss_sum, quad_size_loss_sum, end_points = compute_quad_loss(end_points, config)
+        end_points['quad_center_loss_sum'] = quad_center_loss_sum
+        end_points['quad_vector_loss_sum'] = quad_vector_loss_sum
+        end_points['quad_size_loss_sum'] = quad_size_loss_sum
 
-    # quad_loss_sum = quad_center_loss_sum + quad_vector_loss_sum + quad_size_loss_sum
-    # end_points['quad_loss_sum'] = quad_loss_sum
+        quad_loss_sum = quad_center_loss_sum + quad_vector_loss_sum + quad_size_loss_sum
+        end_points['quad_loss_sum'] = quad_loss_sum
 
     seed_gt_mask = end_points['seed_gt_mask']
     end_points, seed_mask_loss = compute_point_mask_loss(end_points, end_points['seed_mask_logits'], seed_gt_mask)
@@ -479,10 +480,13 @@ def get_loss(end_points, config, FLAGS=None):
 
     # Final loss function
     object_loss = 0.5*objectness_loss + box_loss + 0.1*sem_cls_loss + 0.1*(point_cls_loss + point_pose_loss) + 0.1* seed_mask_loss
-    # quad_loss = quad_loss_sum+ 0.5*quad_score_loss_sum
-    quad_loss = 0
     
-    loss = vote_loss + 1.0 * object_loss + 0.00 * quad_loss
+    
+    loss = vote_loss + 1.0 * object_loss
+    
+    if FLAGS.layout_estimation:
+        quad_loss = quad_loss_sum+ 0.5* quad_score_loss_sum
+        loss = loss + 0.05 * quad_loss
     
     loss *= 10
     end_points['loss'] = loss

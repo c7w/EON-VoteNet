@@ -15,3 +15,4 @@ scannet/scans
 scannet/scans_transform/
 Pointnet2_PyTorch/
 scan2cad/scan2cad_detection_labels/
+journal.txt
