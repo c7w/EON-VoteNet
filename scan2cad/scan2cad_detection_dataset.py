@@ -110,8 +110,9 @@ class Scan2CadDetectionDataset(Dataset):
             height = point_cloud[:,2] - floor_height
             point_cloud = np.concatenate([point_cloud, np.expand_dims(height, 1)],1)
         
-        from scannet.scannet_planes import get_quads 
-        rectangles, total_quad_num, horizontal_quads = get_quads(scan_name)
+        if self.use_quad:
+            from scannet.scannet_planes import get_quads 
+            rectangles, total_quad_num, horizontal_quads = get_quads(scan_name)
         
         # ------------------------------- DATA AUGMENTATION ------------------------------        
         if self.augment:
